@@ -1,0 +1,39 @@
+{
+  "name": "youtube-tray",
+  "version": "1.0.0",
+    "description": "A compact Windows system-tray YouTube browser.",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron .",
+    "check": "node --check main.js && node --check ad-skip.js",
+    "dist": "electron-builder --win nsis"
+  },
+  "keywords": [
+    "electron",
+    "youtube-music",
+    "system-tray"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^36.0.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.youtube.tray",
+    "productName": "YouTube Tray",
+    "files": [
+      "**/*",
+      "!dist/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "assets/icon.svg"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

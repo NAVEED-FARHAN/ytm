@@ -1,12 +1,12 @@
 {
   "name": "youtube-tray",
-  "version": "1.0.0",
+  "version": "1.1.0",
     "description": "A compact Windows system-tray YouTube browser.",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
-    "check": "node --check main.js && node --check ad-skip.js",
+    "check": "node --check main.js && node --check ad-skip.js && node --check shell-preload.js && node --check shell.js",
     "dist": "electron-builder --win nsis"
   },
   "keywords": [
@@ -29,7 +29,7 @@
     ],
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.svg"
+      "icon": "assets/icon.png"
     },
     "nsis": {
       "oneClick": false,

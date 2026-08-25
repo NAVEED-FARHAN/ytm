@@ -3,20 +3,25 @@ const path = require('path');
 
 app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
 
-const iconPath = path.join(__dirname, 'assets', 'icon.svg');
+// nativeImage cannot decode SVG, so the tray uses the pre-rendered PNG pair
+// (tray.png + tray@2x.png is picked automatically on high-DPI displays).
+const iconPath = path.join(__dirname, 'assets', 'tray.png');
 const WINDOW_WIDTH = 410;
 const WINDOW_HEIGHT = 760;
 const FLYOUT_GAP = 12;
-const FLYOUT_TRAVEL = 36;
-const FLYOUT_DURATION_MS = 190;
+const FLYOUT_SHOW_DURATION_MS = 300;
+const FLYOUT_HIDE_DURATION_MS = 200;
 const TOGGLE_SHORTCUT = 'Alt+`';
 const PANEL_HEIGHT_RATIO = 0.7;
 const MIN_PANEL_HEIGHT = 480;
 
 let tray;
 let youtubeWin;
+let guestWebContents;
 let isQuitting = false;
 let flyoutAnimationTimer;
+let flyoutAnimationId = 0;
+let flyoutCanHideOnBlur = false;
 let lastNativeSkipAt = 0;
 
 function isYouTubeAvailable() {
@@ -24,13 +29,16 @@ function isYouTubeAvailable() {
 }
 
 function runInYouTube(source) {
-  if (!isYouTubeAvailable() || youtubeWin.webContents.isDestroyed()) return;
-  youtubeWin.webContents.executeJavaScript(source, true).catch(() => {});
+  if (!isYouTubeAvailable() || youtubeWin.webContents.isDestroyed()) return Promise.resolve(false);
+  return youtubeWin.webContents.executeJavaScript(source, true).catch(() => false);
 }
 
 // YouTube can ignore DOM-created click events on its ad controls. This emits the same
 // pointer sequence Chromium receives from a user, constrained to the visible page bounds.
+// The coordinates come from inside the webview guest, so the input must be injected into
+// the guest's own webContents — sending it to the shell page never reaches YouTube.
 ipcMain.on('ad-skip:click-visible-button', (_event, point) => {
+  if (!guestWebContents || guestWebContents.isDestroyed()) return;
   if (!isYouTubeAvailable() || !youtubeWin.isVisible()) return;
   if (!Number.isFinite(point?.x) || !Number.isFinite(point?.y)) return;
 
@@ -41,12 +49,12 @@ ipcMain.on('ad-skip:click-visible-button', (_event, point) => {
   if (now - lastNativeSkipAt < 350) return;
   lastNativeSkipAt = now;
 
-  youtubeWin.webContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
-  youtubeWin.webContents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
-  youtubeWin.webContents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  guestWebContents.sendInputEvent({ type: 'mouseMove', x: point.x, y: point.y });
+  guestWebContents.sendInputEvent({ type: 'mouseDown', x: point.x, y: point.y, button: 'left', clickCount: 1 });
+  guestWebContents.sendInputEvent({ type: 'mouseUp', x: point.x, y: point.y, button: 'left', clickCount: 1 });
 });
 
-function getFlyoutBounds(horizontalOffset = 0) {
+function getFlyoutBounds() {
   if (!isYouTubeAvailable()) return null;
 
   const { workArea } = screen.getPrimaryDisplay();
@@ -57,7 +65,7 @@ function getFlyoutBounds(horizontalOffset = 0) {
     Math.max(MIN_PANEL_HEIGHT, Math.round(workArea.height * PANEL_HEIGHT_RATIO))
   );
   return {
-    x: workArea.x + workArea.width - width - FLYOUT_GAP + horizontalOffset,
+    x: workArea.x + workArea.width - width - FLYOUT_GAP,
     y: workArea.y + workArea.height - height - FLYOUT_GAP,
     width,
     height
@@ -65,54 +73,63 @@ function getFlyoutBounds(horizontalOffset = 0) {
 }
 
 function stopFlyoutAnimation() {
+  flyoutAnimationId += 1;
   if (flyoutAnimationTimer) {
     clearTimeout(flyoutAnimationTimer);
     flyoutAnimationTimer = undefined;
   }
 }
 
-function animateFlyout(show) {
+function setFlyoutSurface(revealed, animated) {
+  return runInYouTube(`(() => {
+    const root = document.documentElement;
+    root.style.setProperty('--flyout-show-duration', '${FLYOUT_SHOW_DURATION_MS}ms');
+    root.style.setProperty('--flyout-hide-duration', '${FLYOUT_HIDE_DURATION_MS}ms');
+    root.classList.toggle('flyout-visible', ${revealed});
+    root.classList.toggle('flyout-animated', ${animated});
+    root.getBoundingClientRect();
+    return true;
+  })()`);
+}
+
+async function animateFlyout(show) {
   if (!isYouTubeAvailable()) return;
 
   stopFlyoutAnimation();
+  flyoutCanHideOnBlur = false;
+  const animationId = ++flyoutAnimationId;
   const target = getFlyoutBounds();
   if (!target) return;
 
-  const startX = show ? target.x + FLYOUT_TRAVEL : target.x;
-  const endX = show ? target.x : target.x + FLYOUT_TRAVEL;
-  const startedAt = Date.now();
+  // Keep the native window fixed entirely inside the Windows work area. The
+  // GPU-composited web surface moves inside it, avoiding a jittery native move
+  // loop and never crossing into the taskbar.
+  youtubeWin.setBounds(target);
+  if (show) {
+    // Park the fully rendered surface below the window edge while it is still
+    // invisible, so the first visible frame is empty and the flyout rises out
+    // of the taskbar edge like the Windows shell flyouts.
+    await setFlyoutSurface(false, false);
+    if (animationId !== flyoutAnimationId || !isYouTubeAvailable()) return;
+    if (!youtubeWin.isVisible()) youtubeWin.showInactive();
+    setFlyoutSurface(true, true);
 
-  youtubeWin.setBounds({ ...target, x: startX });
-  youtubeWin.setOpacity(show ? 0 : 1);
-  if (show && !youtubeWin.isVisible()) youtubeWin.show();
-
-  const tick = () => {
-    if (!isYouTubeAvailable()) return;
-
-    const elapsed = Date.now() - startedAt;
-    const progress = Math.min(elapsed / FLYOUT_DURATION_MS, 1);
-    // Fast at the start, then softly settles into its final position.
-    const eased = 1 - Math.pow(1 - progress, 3);
-    youtubeWin.setPosition(Math.round(startX + (endX - startX) * eased), target.y);
-    youtubeWin.setOpacity(show ? eased : 1 - eased);
-
-    if (progress < 1) {
-      flyoutAnimationTimer = setTimeout(tick, 16);
-      return;
-    }
-
-    flyoutAnimationTimer = undefined;
-    if (show) {
-      youtubeWin.setOpacity(1);
+    flyoutAnimationTimer = setTimeout(() => {
+      if (animationId !== flyoutAnimationId || !isYouTubeAvailable()) return;
+      flyoutAnimationTimer = undefined;
       youtubeWin.focus();
-    } else {
+      // showInactive can emit a blur event as it becomes visible. Only hide
+      // after focus has been intentionally given to the completed flyout.
+      flyoutCanHideOnBlur = true;
+    }, FLYOUT_SHOW_DURATION_MS);
+  } else {
+    setFlyoutSurface(false, true);
+    flyoutAnimationTimer = setTimeout(() => {
+      if (animationId !== flyoutAnimationId || !isYouTubeAvailable()) return;
+      flyoutAnimationTimer = undefined;
       youtubeWin.hide();
-      youtubeWin.setOpacity(1);
-      youtubeWin.setBounds(target);
-    }
-  };
-
-  tick();
+    }, FLYOUT_HIDE_DURATION_MS);
+  }
 }
 
 function showYouTube() {
@@ -122,8 +139,9 @@ function showYouTube() {
   } else {
     stopFlyoutAnimation();
     youtubeWin.setBounds(getFlyoutBounds());
-    youtubeWin.setOpacity(1);
+    setFlyoutSurface(true, false);
     youtubeWin.focus();
+    flyoutCanHideOnBlur = true;
   }
 }
 
@@ -136,28 +154,6 @@ function toggleYouTube() {
   }
 }
 
-const pagePresentationScript = `(() => {
-  const STYLE_ID = 'youtube-tray-page-presentation';
-  if (document.getElementById(STYLE_ID)) return;
-
-  const style = document.createElement('style');
-  style.id = STYLE_ID;
-  style.textContent =
-    'html, body { margin: 0 !important; border: 0; border-radius: 0; background: #0f0f0f !important; scrollbar-width: none !important; }' +
-    'html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar { width: 0 !important; height: 0 !important; background: transparent !important; }' +
-    'ytd-app { border-radius: 0; background: #0f0f0f; scrollbar-width: none !important; }' +
-    '#youtube-tray-drag-region { position: fixed; z-index: 2147483647; top: 0; right: 0; left: 0; height: 8px; -webkit-app-region: drag; }';
-  document.head.appendChild(style);
-
-  const dragRegion = document.createElement('div');
-  dragRegion.id = 'youtube-tray-drag-region';
-  document.body.appendChild(dragRegion);
-})();`;
-
-function injectPagePresentation() {
-  runInYouTube(pagePresentationScript);
-}
-
 function createYouTubeWindow() {
   youtubeWin = new BrowserWindow({
     width: WINDOW_WIDTH,
@@ -166,29 +162,29 @@ function createYouTubeWindow() {
     minHeight: MIN_PANEL_HEIGHT,
     show: false,
     frame: false,
-    transparent: false,
-    backgroundColor: '#0f0f0f',
+    transparent: true,
+    backgroundColor: '#00000000',
     resizable: true,
     skipTaskbar: true,
     alwaysOnTop: true,
     title: 'YouTube',
     webPreferences: {
-      // Keeps the signed-in YouTube session after restarts.
-      partition: 'persist:youtube',
       // The ad observer retains normal timing while the window is hidden to the tray.
       backgroundThrottling: false,
-      // The ad guard runs before each YouTube document begins rendering.
-      preload: path.join(__dirname, 'ad-skip.js'),
+      // The local shell owns the animation; its guest loads the real YouTube page.
+      preload: path.join(__dirname, 'shell-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: true
+      sandbox: false,
+      webviewTag: true
     }
   });
 
-  youtubeWin.loadURL('https://www.youtube.com');
-  youtubeWin.webContents.on('dom-ready', injectPagePresentation);
-  youtubeWin.webContents.on('did-finish-load', injectPagePresentation);
-  youtubeWin.webContents.on('did-navigate-in-page', injectPagePresentation);
+  youtubeWin.loadFile('shell.html');
+
+  youtubeWin.webContents.on('did-attach-webview', (_event, webContents) => {
+    guestWebContents = webContents;
+  });
 
   youtubeWin.on('close', (event) => {
     if (!isQuitting) {
@@ -197,7 +193,7 @@ function createYouTubeWindow() {
     }
   });
   youtubeWin.on('blur', () => {
-    if (!isQuitting && youtubeWin.isVisible()) animateFlyout(false);
+    if (!isQuitting && flyoutCanHideOnBlur && youtubeWin.isVisible()) animateFlyout(false);
   });
 
   youtubeWin.once('ready-to-show', () => {

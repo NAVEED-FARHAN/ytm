@@ -1,0 +1,61 @@
+:root {
+  /* Duration defaults mirror FLYOUT_SHOW_DURATION_MS / FLYOUT_HIDE_DURATION_MS in main.js. */
+  --flyout-show-duration: 300ms;
+  --flyout-hide-duration: 200ms;
+  /* WinUI flyout curves: an explosive launch with a long settle, a quick accelerating dismiss. */
+  --flyout-show-ease: cubic-bezier(0.1, 0.9, 0.2, 1);
+  --flyout-hide-ease: cubic-bezier(0.7, 0, 0.84, 0);
+  --flyout-radius: 18px;
+}
+
+html,
+body {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Parked fully below the window's bottom edge and faded out, so the flyout
+   rises out of the taskbar edge the way the Windows shell flyouts do. */
+#flyout-surface {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  border-radius: var(--flyout-radius);
+  background: #0f0f0f;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.38);
+  transform: translate3d(0, 100%, 0);
+  opacity: 0;
+  will-change: transform, opacity;
+}
+
+.flyout-animated.flyout-visible #flyout-surface {
+  transition:
+    transform var(--flyout-show-duration) var(--flyout-show-ease),
+    opacity var(--flyout-show-duration) var(--flyout-show-ease);
+}
+
+.flyout-animated:not(.flyout-visible) #flyout-surface {
+  transition:
+    transform var(--flyout-hide-duration) var(--flyout-hide-ease),
+    opacity var(--flyout-hide-duration) var(--flyout-hide-ease);
+}
+
+.flyout-visible #flyout-surface {
+  transform: translate3d(0, 0, 0);
+  opacity: 1;
+}
+
+#youtube-page {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  border: 0;
+  /* The guest page is composited as its own layer and escapes the surface's
+     border-radius, so the webview itself has to carry the rounded clip. */
+  border-radius: var(--flyout-radius);
+  clip-path: inset(0 round var(--flyout-radius));
+  background: #0f0f0f;
+}

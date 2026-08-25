@@ -5,6 +5,20 @@
   if (window.__youtubeTrayAdGuardInstalled) return;
   window.__youtubeTrayAdGuardInstalled = true;
 
+  function hideScrollbars() {
+    if (!document.head || document.getElementById('youtube-tray-scrollbar-style')) {
+      if (!document.head) setTimeout(hideScrollbars, 0);
+      return;
+    }
+
+    const style = document.createElement('style');
+    style.id = 'youtube-tray-scrollbar-style';
+    style.textContent =
+      'html, body { scrollbar-width: none !important; }' +
+      'html::-webkit-scrollbar, body::-webkit-scrollbar, *::-webkit-scrollbar { width: 0 !important; height: 0 !important; background: transparent !important; }';
+    document.head.appendChild(style);
+  }
+
   const SELECTORS = {
     adPlayer: [
       '#movie_player.ad-showing',
@@ -129,5 +143,6 @@
 
   setInterval(tick, POLL_INTERVAL_MS);
   startObserver();
+  hideScrollbars();
   tick();
 })();

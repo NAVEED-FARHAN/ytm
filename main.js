@@ -57,7 +57,10 @@ ipcMain.on('ad-skip:click-visible-button', (_event, point) => {
 function getFlyoutBounds() {
   if (!isYouTubeAvailable()) return null;
 
-  const { workArea } = screen.getPrimaryDisplay();
+  // Show on the monitor the cursor is on, so the flyout appears where the user
+  // is looking rather than always on the primary display.
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
+  const { workArea } = display;
   const [width] = youtubeWin.getSize();
   const usableHeight = workArea.height - FLYOUT_GAP * 2;
   const height = Math.min(
@@ -113,15 +116,9 @@ async function animateFlyout(show) {
     if (animationId !== flyoutAnimationId || !isYouTubeAvailable()) return;
     if (!youtubeWin.isVisible()) youtubeWin.showInactive();
     setFlyoutSurface(true, true);
-
-    flyoutAnimationTimer = setTimeout(() => {
-      if (animationId !== flyoutAnimationId || !isYouTubeAvailable()) return;
-      flyoutAnimationTimer = undefined;
-      youtubeWin.focus();
-      // showInactive can emit a blur event as it becomes visible. Only hide
-      // after focus has been intentionally given to the completed flyout.
-      flyoutCanHideOnBlur = true;
-    }, FLYOUT_SHOW_DURATION_MS);
+    // No forced focus here: stealing focus from a fullscreen app is what kicks
+    // it out of fullscreen. The window takes focus on the first click, and the
+    // 'focus' listener arms blur-to-hide only once focus is real.
   } else {
     setFlyoutSurface(false, true);
     flyoutAnimationTimer = setTimeout(() => {
@@ -140,8 +137,6 @@ function showYouTube() {
     stopFlyoutAnimation();
     youtubeWin.setBounds(getFlyoutBounds());
     setFlyoutSurface(true, false);
-    youtubeWin.focus();
-    flyoutCanHideOnBlur = true;
   }
 }
 
@@ -182,8 +177,18 @@ function createYouTubeWindow() {
 
   youtubeWin.loadFile('shell.html');
 
+  // 'screen-saver' is the strongest always-on-top level: it keeps the flyout
+  // above borderless-fullscreen games and videos instead of behind them.
+  youtubeWin.setAlwaysOnTop(true, 'screen-saver', 1);
+
   youtubeWin.webContents.on('did-attach-webview', (_event, webContents) => {
     guestWebContents = webContents;
+  });
+
+  youtubeWin.on('focus', () => {
+    // Blur-to-hide is armed by real focus, never assumed: a flyout shown
+    // inactive over a fullscreen app must not flash-hide on a phantom blur.
+    if (!isQuitting) flyoutCanHideOnBlur = true;
   });
 
   youtubeWin.on('close', (event) => {

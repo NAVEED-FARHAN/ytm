@@ -27,7 +27,7 @@ Data flows strictly main → shell → guest. Do not blur these boundaries.
 - **Close = hide:** the window's `close` event is intercepted to hide instead of destroy (`isQuitting` flag); `window-all-closed` intentionally does nothing. Quit only via the tray menu.
 - **No throttling:** `backgroundThrottling: false` on both the BrowserWindow and the webview so the ad observer keeps working while hidden in the tray.
 - **Selector drift:** YouTube's ad-related class names change periodically. All page-specific selectors are centralized in the `SELECTORS` object at the top of `ad-skip.js`; the text-based fallback (`/skip\s*(ad|ads)|ad\s*skip/i`) must only match while an ad is active.
-- **Blur-hide guard:** `flyoutCanHideOnBlur` exists because `showInactive()` can emit a blur as the window becomes visible; only enable blur-to-hide after the flyout finishes and receives focus.
+- **Fullscreen coexistence:** the flyout must never steal focus — activating a window over a fullscreen app kicks that app out of fullscreen. It shows inactive at the `screen-saver` always-on-top level, takes focus only on the first click, and `flyoutCanHideOnBlur` is armed by the window's real `focus` event, never assumed after showing.
 - **Windows-only assumptions:** work-area math, tray behavior, NSIS target, and AppUserModelId (`com.youtube.tray`) all assume Windows.
 
 ## Conventions
